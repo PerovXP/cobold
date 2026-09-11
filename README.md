@@ -11,6 +11,8 @@ powered by [cobalt](https://github.com/imputnet/cobalt).
   pnpm install
   ```
 - populate `.env` with required env variables based on `.env.example`
+- make sure `ffmpeg` is available in `PATH` (used to generate video covers,
+  otherwise videos won't be streamable in some Telegram clients)
 - build the code
   ```bash
   pnpm build

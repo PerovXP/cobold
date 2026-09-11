@@ -15,6 +15,7 @@ import { finishRequest, outputOptions } from "@/core/data/request"
 import { error, ok } from "@/core/utils/result"
 import { translatable } from "@/core/utils/text"
 import { urlWithAuthSchema } from "@/core/utils/url"
+import { extractVideoCover } from "@/core/utils/video"
 import { env } from "@/telegram/helpers/env"
 
 export const OutputButton = new CallbackDataBuilder("dl", "output", "request")
@@ -93,10 +94,14 @@ async function analyze(buffer: DownloadedMediaContent): Promise<AnalysisResult> 
 
 async function fileToInputMedia(file: DownloadedMediaContent, fileName?: string, sendAsFile?: boolean): Promise<InputMediaLike> {
     const analyzedData: AnalysisResult = sendAsFile ? { type: "document" } : await analyze(file)
+    const isStreamableVideo = analyzedData.type === "video" && !analyzedData.isAnimated
+    const cover = isStreamableVideo ? await extractVideoCover(file, analyzedData.duration) : undefined
     // FIXME: hack around mtcute limitation, a better solution should be implemented
     const fixedFilename = fileName?.endsWith(".jpeg") ? `${fileName.slice(0, -5)}.jpg` : fileName
     return {
         ...analyzedData,
+        supportsStreaming: isStreamableVideo,
+        cover: cover ? { type: "photo", file: cover } : undefined,
         fileName: fixedFilename,
         file,
     }

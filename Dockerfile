@@ -24,6 +24,9 @@ RUN pnpm build
 FROM base AS runner
 WORKDIR /app
 
+# ffmpeg is used to extract video covers (required for video streaming)
+RUN apk add --no-cache ffmpeg
+
 ENV NODE_ENV production
 
 COPY --from=builder /app .
