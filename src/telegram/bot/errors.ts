@@ -27,6 +27,12 @@ export const createDispatcherErrorHandler = (client: TelegramClient) => async (e
             message: ctx.data.messageId,
             text: t("error-unknown"),
         })
+    } else if (ctx.name === "inline_callback_query") {
+        const t = await translatorFor(ctx.data.user)
+        await client.editInlineMessage({
+            messageId: ctx.data.inlineMessageId,
+            text: t("error-unknown"),
+        })
     } else if (ctx.name === "chosen_inline_result") {
         const t = await translatorFor(ctx.data.user)
         if (ctx.data.messageId) {

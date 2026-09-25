@@ -19,6 +19,7 @@ import {
 } from "@/telegram/helpers/handler"
 import { deferredReply, replyText } from "@/telegram/helpers/sent"
 import { getPeerSettings } from "@/telegram/helpers/settings"
+import { editInlineSlideshow } from "@/telegram/helpers/slideshow"
 import { evaluatorsFor } from "@/telegram/helpers/text"
 
 export const downloadDp = Dispatcher.child()
@@ -51,15 +52,15 @@ downloadDp.onNewMessage(async (msg) => {
             return
 
         const originalText = msg.text
-        const res = await onOutputSelected(
-            settings.preferredOutput || "auto",
-            req.result,
-            args => msg.client.editMessage({ ...args, message: msg }),
-            { e, t },
+        const res = await onOutputSelected({
+            outputType: settings.preferredOutput || "auto",
+            request: req.result,
+            editMessage: args => msg.client.editMessage({ ...args, message: msg }),
+            evaluators: { e, t },
             settings,
-            ({ medias }) => msg.replyMediaGroup(medias),
-            msg.sender,
-        )
+            sendGroup: ({ medias }) => msg.replyMediaGroup(medias),
+            sender: msg.sender,
+        })
 
         if (!res)
             msg.client.editMessage({ text: originalText, message: msg })
@@ -87,15 +88,15 @@ downloadDp.onNewMessage(async (msg) => {
         })
 
         if (settings.preferredOutput || isGroupChat) {
-            const res = await onOutputSelected(
-                settings.preferredOutput || "auto",
-                req.result,
-                args => reply.edit(args),
-                { e, t },
+            const res = await onOutputSelected({
+                outputType: settings.preferredOutput || "auto",
+                request: req.result,
+                editMessage: args => reply.edit(args),
+                evaluators: { e, t },
                 settings,
-                ({ medias }) => msg.replyMediaGroup(medias),
-                msg.sender,
-            )
+                sendGroup: ({ medias }) => msg.replyMediaGroup(medias),
+                sender: msg.sender,
+            })
             if (res && isGroupChat)
                 await reply.flush()
         }
@@ -139,18 +140,18 @@ downloadDp.onBotGuestChatQuery(async (ctx) => {
     })
 
     if (settings.preferredOutput) {
-        await onOutputSelected(
-            settings.preferredOutput || "auto",
-            req.result,
-            args => ctx.client.editInlineMessage({
+        await onOutputSelected({
+            outputType: settings.preferredOutput,
+            request: req.result,
+            editMessage: args => ctx.client.editInlineMessage({
                 ...args,
                 messageId: reply,
             }),
-            { e, t },
+            evaluators: { e, t },
             settings,
-            ({ medias }) => ctx.client.sendMediaGroup(peer.id, medias),
-            peer,
-        )
+            sendGroup: ({ medias }) => ctx.client.sendMediaGroup(peer.id, medias),
+            sender: peer,
+        })
     }
 })
 
@@ -210,6 +211,7 @@ downloadDp.onAnyCallbackQuery(OutputButton.filter(), async (upd) => {
     const rawUpd = upd as unknown as (CallbackQueryContext | InlineCallbackQueryContext | BusinessCallbackQueryContext)
 
     const peer = rawUpd._name === "callback_query" ? rawUpd.chat : upd.user
+    const inlineMessageId = rawUpd._name === "inline_callback_query" ? rawUpd.inlineMessageId : undefined
     const settings = await getPeerSettings(peer)
     const { t, e } = await evaluatorsFor(peer)
     const { output: outputType, request: requestId } = upd.match
@@ -221,15 +223,18 @@ downloadDp.onAnyCallbackQuery(OutputButton.filter(), async (upd) => {
         })
     }
 
-    const res = await onOutputSelected(
+    const res = await onOutputSelected({
         outputType,
         request,
-        args => upd.editMessage(args),
-        { t, e },
+        editMessage: args => upd.editMessage(args),
+        evaluators: { t, e },
         settings,
-        ({ medias }) => upd.client.sendMediaGroup(peer.id, medias),
-        upd.user,
-    )
+        sendGroup: ({ medias }) => upd.client.sendMediaGroup(peer.id, medias),
+        sender: upd.user,
+        editSlideshow: inlineMessageId
+            ? ({ medias, sourceUrl }) => editInlineSlideshow(upd.client, inlineMessageId, medias, upd.user, sourceUrl)
+            : undefined,
+    })
     if (!res && rawUpd._name === "callback_query" && rawUpd.chat.type !== "user")
         setTimeout(() => upd.client.deleteMessagesById(rawUpd.chat.id, [rawUpd.messageId]), errorDeleteDelay)
 })
@@ -241,27 +246,41 @@ downloadDp.onChosenInlineResult(async (upd) => {
     const settings = await getPeerSettings(upd.user)
     if (settings.preferredOutput) {
         const request = await getRequest(upd.id)
-        await onOutputSelected(
-            settings.preferredOutput,
+        const { t, e } = await evaluatorsFor(upd.user)
+        await onOutputSelected({
+            outputType: settings.preferredOutput,
             request,
-            args => upd.editMessage({ ...args, messageId }),
-            await evaluatorsFor(upd.user),
+            editMessage: args => upd.editMessage({ ...args, messageId }),
+            evaluators: { t, e },
             settings,
-            ({ medias }) => upd.client.sendMediaGroup(upd.user.id, medias),
-            upd.user,
-        )
+            sendGroup: ({ medias }) => upd.client.sendMediaGroup(upd.user.id, medias),
+            sender: upd.user,
+            editSlideshow: ({ medias, sourceUrl }) => editInlineSlideshow(upd.client, messageId, medias, upd.user, sourceUrl),
+        })
     }
 })
 
-async function onOutputSelected(
+type OutputSelection = {
     outputType: string,
     request: MediaRequest | undefined,
     editMessage: (edit: { text?: string, media?: InputMediaLike }) => Promise<unknown>,
-    { t, e }: Evaluators,
+    evaluators: Evaluators,
     settings: Settings,
     sendGroup: (send: { medias: InputMediaLike[] }) => Promise<unknown>,
     sender: Peer,
-) {
+    editSlideshow?: (send: { medias: InputMediaLike[], sourceUrl?: string }) => Promise<boolean>,
+}
+
+async function onOutputSelected({
+    outputType,
+    request,
+    editMessage,
+    evaluators: { t, e },
+    settings,
+    sendGroup,
+    sender,
+    editSlideshow,
+}: OutputSelection) {
     await editMessage({ text: t("downloading-title") })
     const res = await handleMediaDownload(outputType, request, settings)
     if (!res.success) {
@@ -272,11 +291,22 @@ async function onOutputSelected(
 
     await editMessage({ text: t("uploading-title") })
     if (res.result.length !== 1) {
-        await editMessage({ text: t("note-picker") })
-        const chunkSize = 10
-        for (let i = 0; i < res.result.length; i += chunkSize) {
-            const chunk = res.result.slice(i, i + chunkSize)
-            await sendGroup({ medias: chunk })
+        const sourceUrl = settings.preferredAttribution ? request?.url : undefined
+        let edited = false
+        if (editSlideshow) {
+            try {
+                edited = await editSlideshow({ medias: res.result, sourceUrl })
+            } catch (error) {
+                console.error("Failed to edit inline slideshow:", error)
+            }
+        }
+        if (!edited) {
+            await editMessage({ text: t("note-picker") })
+            const chunkSize = 10
+            for (let i = 0; i < res.result.length; i += chunkSize) {
+                const chunk = res.result.slice(i, i + chunkSize)
+                await sendGroup({ medias: chunk })
+            }
         }
     } else {
         // FIXME: Merge two edit calls
